@@ -248,7 +248,8 @@
 
         // Alpha: fade in nos primeiros 15% da vida, fade out nos últimos 50%
         const p     = this.life / this.maxLife;
-        const alpha = (p < 0.15 ? p / 0.15 : p > 0.5 ? 1 - (p - 0.5) / 0.5 : 1) * C.alpha;
+        //const alpha = (p < 0.15 ? p / 0.15 : p > 0.5 ? 1 - (p - 0.5) / 0.5 : 1) * C.alpha;
+        const alpha = 1;
 
         ctx.beginPath();
         ctx.moveTo(this.trail[0].x, this.trail[0].y);
