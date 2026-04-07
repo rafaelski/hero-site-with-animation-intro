@@ -5,281 +5,504 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>Fidenza Embed</title>
   <style>
+    /* Reset mínimo */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #0f0e17; }
     canvas { display: block; pointer-events: none; }
 
+    /*
+      OVERLAY DE INTRO
+      Cobre toda a tela enquanto a animação de apresentação roda.
+      A propriedade transition garante o fadeout suave de 0.5s
+      quando a opacity for levada a 0 via JavaScript.
+    */
     #intro-overlay {
-      position: fixed; inset: 0; z-index: 9999;
-      background: #0f0e17; pointer-events: none; opacity: 1;
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: #0f0e17;
+      pointer-events: none;
+      opacity: 1;
       transition: opacity 0.5s ease-out;
     }
-    #intro-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-    /* sketch roda normalmente desde o início, mas invisível */
-    #sketch-host { position: fixed; inset: 0; }
+    /* Canvas onde a animação de intro é desenhada */
+    #intro-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    /*
+      HOST DO SKETCH (p5.js)
+      Fica por baixo da overlay e roda livremente desde o início.
+      O slider fica parado esperando o sinal da intro antes de animar.
+    */
+    #sketch-host {
+      position: fixed;
+      inset: 0;
+    }
   </style>
 </head>
 <body>
 
-  <!-- Sketch roda livremente desde o início, por baixo da overlay -->
+  <!--
+    O sketch.js carrega e roda imediatamente, por baixo da overlay.
+    As partículas já estão animadas quando a intro terminar.
+    Apenas o hint do slider fica bloqueado até receber window._introSignal.
+  -->
   <div id="sketch-host">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.1/p5.min.js"></script>
     <script src="sketch.js"></script>
   </div>
 
-  <!-- Intro por cima -->
+  <!-- A overlay fica por cima do sketch durante toda a intro -->
   <div id="intro-overlay">
     <canvas id="intro-canvas"></canvas>
   </div>
 
   <script>
-  (function(){
-    const YELLOW = '#e8fe41';
-    const BG     = '#0f0e17';
+  // Encapsulado em IIFE para não poluir o escopo global
+  (function () {
 
+    // ── CONSTANTES VISUAIS ───────────────────────────────────────
+    const YELLOW = '#e8fe41'; // cor da esfera e do cursor
+    const BG     = '#0f0e17'; // cor de fundo (igual ao body)
+
+    // ── CANVAS ───────────────────────────────────────────────────
     const canvas = document.getElementById('intro-canvas');
     const ctx    = canvas.getContext('2d');
+
+    // Dimensões e geometria da esfera — recalculadas no resize
     let W, H, CX, CY, SR;
 
-    function resize(){
-      W = canvas.width  = window.innerWidth;
-      H = canvas.height = window.innerHeight;
-      CX = W/2; CY = H/2;
-      SR = Math.min(W,H) * 0.38;
+    function resize() {
+      W  = canvas.width  = window.innerWidth;
+      H  = canvas.height = window.innerHeight;
+      CX = W / 2;
+      CY = H / 2;
+      // Raio da esfera: 38% do menor lado da tela (igual ao sketch.js)
+      SR = Math.min(W, H) * 0.38;
     }
     resize();
     window.addEventListener('resize', resize);
 
-    // ── HARDCODED VALUES ─────────────────────────────────────────
-    const C = {
-      count:  1,
-      speed:  0.6,
-      turb:   0.37,
-      nscale: 0.011,
-      ntime:  0.005,
-      curve:  0.084,
-      life:   94,
-      wmin:   1.6,
-      wmax:   8.0,
-      trail:  4,
-      alpha:  1.00,
-      spread: 24,
-      cmove:  450,
-      emit:   1100,
-      leave:  0.15,
-    };
-    const BASE_SR = 150;
-    function sc(v){ return v * (SR / BASE_SR); }
 
-    // ── PERLIN NOISE ─────────────────────────────────────────────
-    function fade(t){ return t*t*t*(t*(t*6-15)+10); }
-    function mix(a,b,t){ return a*(1-t)+b*t; }
+    // ── PARÂMETROS DAS PARTÍCULAS ────────────────────────────────
+    /*
+      Todos os valores espaciais (speed, spread, wmin, wmax) foram calibrados
+      num preview pequeno onde SR ≈ 150px. A função sc() os escala
+      proporcionalmente ao SR real, então o visual é idêntico em qualquer
+      resolução de tela.
+    */
+    const BASE_SR = 150; // SR de referência do preview onde os valores foram ajustados
+
+    const C = {
+      count:  1,      // partículas emitidas por frame
+      speed:  0.6,    // velocidade inicial (em px no BASE_SR)
+      turb:   0.37,   // quanto o noise desvia a direção (0 = linha reta, 1 = caótico)
+      nscale: 0.011,  // escala espacial do campo de noise (frequência das ondas)
+      ntime:  0.005,  // velocidade de evolução do campo no tempo
+      curve:  0.084,  // curvatura base de cada partícula (rotação constante da velocidade)
+      life:   94,     // vida máxima em frames (±60% de variação aleatória)
+      wmin:   1.6,    // espessura mínima do traço (em px no BASE_SR)
+      wmax:   8.0,    // espessura máxima do traço (em px no BASE_SR)
+      trail:  4,      // comprimento da cauda (quantos pontos o trail guarda)
+      alpha:  1.00,   // opacidade máxima das partículas
+      spread: 24,     // raio de dispersão do ponto de spawn (em px no BASE_SR)
+      cmove:  450,    // duração do movimento do cursor entre pontos (ms)
+      emit:   1100,   // tempo total de emissão em cada ponto (ms)
+      leave:  0.15,   // fração do tempo de emissão após a qual o cursor já sai (0–1)
+    };
+
+    // Escala um valor do espaço do preview para o espaço real da tela
+    function sc(v) { return v * (SR / BASE_SR); }
+
+
+    // ── NOISE DE PERLIN (implementação leve) ─────────────────────
+    /*
+      Perlin noise clássico 2D. Usado para criar o campo de fluxo
+      que guia as partículas — produz movimentos suaves e orgânicos,
+      sem saltos bruscos.
+
+      Referência: Ken Perlin, 2002 (versão improved).
+    */
+
+    // Tabela de permutação aleatória (embaralhada uma vez no início)
     const PERM = new Uint8Array(512);
-    (function(){
-      const p=new Uint8Array(256);
-      for(let i=0;i<256;i++) p[i]=i;
-      for(let i=255;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=p[i];p[i]=p[j];p[j]=t; }
-      for(let i=0;i<512;i++) PERM[i]=p[i&255];
+    (function buildPermTable() {
+      const p = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) p[i] = i;
+      // Fisher-Yates shuffle
+      for (let i = 255; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const t = p[i]; p[i] = p[j]; p[j] = t;
+      }
+      // Duplicamos para evitar operações de módulo no lookup
+      for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
     })();
-    function grad(h,x,y){ const u=h<8?x:y,v=h<4?y:h===12||h===14?x:0; return((h&1)?-u:u)+((h&2)?-v:v); }
-    function noise2(x,y){
-      const X=Math.floor(x)&255, Y=Math.floor(y)&255;
-      x-=Math.floor(x); y-=Math.floor(y);
-      const u=fade(x), v=fade(y);
-      const a=PERM[X]+Y, b=PERM[X+1]+Y;
+
+    // Curva de fade (suavização cúbica: 6t⁵ − 15t⁴ + 10t³)
+    function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+
+    // Interpolação linear
+    function mix(a, b, t) { return a * (1 - t) + b * t; }
+
+    // Gradiente pseudo-aleatório baseado no hash h
+    function grad(h, x, y) {
+      const u = h < 8 ? x : y;
+      const v = h < 4 ? y : (h === 12 || h === 14 ? x : 0);
+      return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+    }
+
+    // Retorna um valor de noise entre -1 e 1 para o ponto (x, y)
+    function noise2(x, y) {
+      const X = Math.floor(x) & 255;
+      const Y = Math.floor(y) & 255;
+      x -= Math.floor(x);
+      y -= Math.floor(y);
+      const u = fade(x), v = fade(y);
+      const a = PERM[X] + Y, b = PERM[X + 1] + Y;
       return mix(
-        mix(grad(PERM[a]&15,x,y),    grad(PERM[b]&15,x-1,y),    u),
-        mix(grad(PERM[a+1]&15,x,y-1),grad(PERM[b+1]&15,x-1,y-1),u),
+        mix(grad(PERM[a]     & 15, x,     y    ), grad(PERM[b]     & 15, x - 1, y    ), u),
+        mix(grad(PERM[a + 1] & 15, x,     y - 1), grad(PERM[b + 1] & 15, x - 1, y - 1), u),
         v
       );
     }
+
+    // Avanço do tempo no campo de noise (incrementado a cada frame)
     let noiseTime = 0;
 
-    // ── PARTICLE ─────────────────────────────────────────────────
+
+    // ── PARTÍCULA ────────────────────────────────────────────────
+    /*
+      Cada partícula nasce no ponto onde o cursor parou, sai em direção
+      aleatória, e é gradualmente desviada pelo campo de Perlin noise.
+      Ela deixa um trail (rastro) de pontos que é desenhado como uma linha.
+    */
     class Particle {
-      constructor(ox, oy){
-        this.x = ox + (Math.random()-0.5)*sc(C.spread);
-        this.y = oy + (Math.random()-0.5)*sc(C.spread);
+      constructor(ox, oy) {
+        // Posição inicial com dispersão aleatória ao redor do ponto de origem
+        this.x = ox + (Math.random() - 0.5) * sc(C.spread);
+        this.y = oy + (Math.random() - 0.5) * sc(C.spread);
+
+        // Velocidade inicial: direção aleatória, magnitude = C.speed escalada
         const angle = Math.random() * Math.PI * 2;
-        const spd = sc(C.speed);
+        const spd   = sc(C.speed);
         this.vx = Math.cos(angle) * spd;
         this.vy = Math.sin(angle) * spd;
-        this.baseCurve = (Math.random()-0.5) * 2 * C.curve;
-        this.trail = [{x:this.x, y:this.y}];
+
+        // Curvatura individual: rotação constante da velocidade a cada frame
+        // Metade das partículas curva p/ esquerda, metade p/ direita
+        this.baseCurve = (Math.random() - 0.5) * 2 * C.curve;
+
+        // Trail: lista de posições passadas usada para desenhar a cauda
+        this.trail = [{ x: this.x, y: this.y }];
+
+        // Contagem de vida
         this.life    = 0;
-        this.maxLife = Math.round(C.life * (0.7 + Math.random()*0.6));
-        this.w       = sc(C.wmin) + Math.random()*(sc(C.wmax) - sc(C.wmin));
+        this.maxLife = Math.round(C.life * (0.7 + Math.random() * 0.6)); // variação ±30%
+
+        // Espessura do traço (aleatória dentro do range definido)
+        this.w = sc(C.wmin) + Math.random() * (sc(C.wmax) - sc(C.wmin));
       }
-      update(){
+
+      update() {
         this.life++;
-        const nsc = C.nscale * (BASE_SR / SR);
-        const n = noise2(this.x*nsc + noiseTime, this.y*nsc + noiseTime*0.7) * Math.PI * 2;
-        const spd = sc(C.speed);
-        this.vx = mix(this.vx, Math.cos(n)*spd, C.turb*0.15);
-        this.vy = mix(this.vy, Math.sin(n)*spd, C.turb*0.15);
-        const cs=Math.cos(this.baseCurve), sn=Math.sin(this.baseCurve);
-        this.vx = this.vx*cs - this.vy*sn;
-        this.vy = this.vx*sn + this.vy*cs;
-        this.x+=this.vx; this.y+=this.vy;
-        this.trail.push({x:this.x, y:this.y});
-        if(this.trail.length > C.trail) this.trail.shift();
+
+        // Steering pelo campo de Perlin noise:
+        // O nscale é ajustado inversamente ao SR para que a frequência
+        // visual das ondas seja sempre a mesma, independente da resolução
+        const nsc     = C.nscale * (BASE_SR / SR);
+        const noiseAngle = noise2(
+          this.x * nsc + noiseTime,
+          this.y * nsc + noiseTime * 0.7
+        ) * Math.PI * 2;
+
+        // Blend da velocidade atual com a direção do noise (suave, não abrupto)
+        const spd  = sc(C.speed);
+        const blend = C.turb * 0.15;
+        this.vx = mix(this.vx, Math.cos(noiseAngle) * spd, blend);
+        this.vy = mix(this.vy, Math.sin(noiseAngle) * spd, blend);
+
+        // Aplica curvatura base: rotaciona o vetor de velocidade
+        const cs  = Math.cos(this.baseCurve);
+        const sn  = Math.sin(this.baseCurve);
+        const nvx = this.vx * cs - this.vy * sn;
+        const nvy = this.vx * sn + this.vy * cs;
+        this.vx = nvx;
+        this.vy = nvy;
+
+        // Move a partícula
+        this.x += this.vx;
+        this.y += this.vy;
+
+        // Atualiza trail
+        this.trail.push({ x: this.x, y: this.y });
+        if (this.trail.length > C.trail) this.trail.shift();
       }
-      draw(){
-        if(this.trail.length < 2) return;
-        const p = this.life / this.maxLife;
-        const alpha = (p < 0.15 ? p/0.15 : p > 0.5 ? 1-(p-0.5)/0.5 : 1) * C.alpha;
+
+      draw() {
+        if (this.trail.length < 2) return;
+
+        // Alpha: fade in nos primeiros 15% da vida, fade out nos últimos 50%
+        const p     = this.life / this.maxLife;
+        const alpha = (p < 0.15 ? p / 0.15 : p > 0.5 ? 1 - (p - 0.5) / 0.5 : 1) * C.alpha;
+
         ctx.beginPath();
         ctx.moveTo(this.trail[0].x, this.trail[0].y);
-        for(let i=1;i<this.trail.length;i++) ctx.lineTo(this.trail[i].x, this.trail[i].y);
+        for (let i = 1; i < this.trail.length; i++) {
+          ctx.lineTo(this.trail[i].x, this.trail[i].y);
+        }
         ctx.strokeStyle = `rgba(10,15,20,${alpha.toFixed(3)})`;
-        ctx.lineWidth = this.w;
-        ctx.lineCap='round'; ctx.lineJoin='round';
+        ctx.lineWidth   = this.w;
+        ctx.lineCap     = 'round';
+        ctx.lineJoin    = 'round';
         ctx.stroke();
       }
-      isDead(){ return this.life >= this.maxLife; }
+
+      isDead() { return this.life >= this.maxLife; }
     }
+
 
     // ── CURSOR ───────────────────────────────────────────────────
-    const cursorSVG = `<svg width="24" height="24" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6.63564 2.28753C5.98325 1.75037 5 2.21445 5 3.05952V17.0583C5 17.9844 6.15025 18.413 6.75622 17.7127L10.2799 13.6402C10.5648 13.3109 10.9788 13.1217 11.4142 13.1217L17.0061 13.1217C17.9444 13.1217 18.3661 11.9461 17.6418 11.3497L6.63564 2.28753Z" fill="${BG}" stroke="${YELLOW}" stroke-width="1.2"/></svg>`;
+    /*
+      Cursor customizado usando o SVG fornecido, embutido como data URI
+      para não depender de arquivo externo. Funciona em todos os browsers.
+    */
+    const cursorSVG = `<svg width="24" height="24" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6.63564 2.28753C5.98325 1.75037 5 2.21445 5 3.05952V17.0583C5 17.9844 6.15025 18.413 6.75622 17.7127L10.2799 13.6402C10.5648 13.3109 10.9788 13.1217 11.4142 13.1217L17.0061 13.1217C17.9444 13.1217 18.3661 11.9461 17.6418 11.3497L6.63564 2.28753Z"
+        fill="${BG}" stroke="${YELLOW}" stroke-width="1.2"/>
+    </svg>`;
+
     const cursorImg = new Image();
-    cursorImg.src = 'data:image/svg+xml;base64,' + btoa(cursorSVG);
-    function drawCursor(x,y){
-      if(cursorImg.complete) ctx.drawImage(cursorImg, x, y, 24, 24);
+    cursorImg.src   = 'data:image/svg+xml;base64,' + btoa(cursorSVG);
+
+    function drawCursor(x, y) {
+      if (cursorImg.complete) ctx.drawImage(cursorImg, x, y, 24, 24);
     }
 
-    function easeInOut(t){ return t<0.5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2; }
 
-    function getTouchPoints(){
+    // ── HELPERS ──────────────────────────────────────────────────
+
+    // Easing cúbico suave (ease-in-out) para o movimento do cursor
+    function easeInOut(t) {
+      return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    // Os 3 pontos onde o cursor para e emite partículas
+    // Definidos em coordenadas relativas ao centro e raio da esfera
+    function getTouchPoints() {
       return [
-        {x: CX - SR*0.28, y: CY - SR*0.32},
-        {x: CX + SR*0.38, y: CY + SR*0.08},
-        {x: CX - SR*0.06, y: CY + SR*0.42},
+        { x: CX - SR * 0.28, y: CY - SR * 0.32 }, // superior esquerdo
+        { x: CX + SR * 0.38, y: CY + SR * 0.08 }, // direita
+        { x: CX - SR * 0.06, y: CY + SR * 0.42 }, // inferior centro
       ];
     }
 
-    // ── STATE MACHINE ─────────────────────────────────────────────
-    let phase='init', phaseStart=null, phaseIdx=0;
-    let cursorX=0, cursorY=0;
-    let mfx,mfy,mtx,mty;
-    let emitting=false, emitX=0, emitY=0;
-    let particles=[];
-    let emitPhaseStart=null;
-    let fadingOut=false;
 
-    function setPhase(n,now){ phase=n; phaseStart=now; }
+    // ── MÁQUINA DE ESTADOS ────────────────────────────────────────
+    /*
+      A animação de intro é controlada por uma state machine simples.
+      Cada fase (phase) tem uma duração e, ao terminar, transiciona para a próxima.
 
-    function startFadeOut(){
-      if(fadingOut) return;
-      fadingOut = true;
-      // Espera 1s no 3o ponto, envia sinal ao sketch, depois fadeout 0.5s
-      setTimeout(function(){
-        window._introSignal = true;  // sketch ouve isso e anima o slider
-        setTimeout(function(){
-          document.getElementById('intro-overlay').style.opacity = '0';
-          setTimeout(function(){
-            document.getElementById('intro-overlay').style.display = 'none';
-          }, 520);
-        }, 100); // fadeout começa logo após o sinal
-      }, 1000);
+      Fases:
+        init       → posiciona cursor fora da tela, aguarda 180ms
+        move       → cursor desloca até o próximo ponto de toque
+        emit       → cursor parado, partículas emitidas; cursor sai cedo (C.leave)
+        move-emit  → cursor em movimento, partículas ainda emitindo do ponto anterior
+        move-final → igual ao move-emit, mas ao chegar dispara o fadeout
+    */
+
+    let phase       = 'init'; // fase atual
+    let phaseStart  = null;   // timestamp de início da fase atual
+    let phaseIdx    = 0;      // índice do ponto de toque atual (0, 1, 2)
+
+    let cursorX = 0, cursorY = 0;        // posição atual do cursor animado
+    let mfx, mfy, mtx, mty;             // from/to do movimento atual
+
+    let emitting      = false;           // se true, gera partículas a cada frame
+    let emitX = 0,    emitY = 0;        // ponto de origem das partículas
+    let emitPhaseStart = null;           // quando começou a emissão atual
+
+    let particles = [];                  // pool de partículas ativas
+    let fadingOut = false;               // impede que startFadeOut() rode duas vezes
+
+    function setPhase(name, now) {
+      phase      = name;
+      phaseStart = now;
     }
 
-    function tick(now){
+    /*
+      startFadeOut() é chamada quando o cursor chega ao 3º ponto.
+      Sequência:
+        1. Aguarda 1s emitindo partículas no 3º ponto
+        2. Seta window._introSignal = true → sketch.js recebe e anima o slider
+        3. 100ms depois: inicia fadeout de 0.5s da overlay
+        4. Após o fadeout: remove a overlay do DOM
+    */
+    function startFadeOut() {
+      if (fadingOut) return;
+      fadingOut = true;
+
+      setTimeout(function () {
+
+        // Sinal para o sketch.js — ouvido via setInterval(50ms) lá
+        window._introSignal = true;
+
+        // Fadeout da overlay (a transição CSS de 0.5s cuida da suavidade)
+        setTimeout(function () {
+          document.getElementById('intro-overlay').style.opacity = '0';
+
+          // Remove do DOM após o fade terminar (0.5s + 20ms de margem)
+          setTimeout(function () {
+            document.getElementById('intro-overlay').style.display = 'none';
+          }, 520);
+
+        }, 100); // pequeno delay para o sinal chegar antes do fade
+
+      }, 1000); // 1s parado no 3º ponto antes de iniciar saída
+    }
+
+
+    // ── LOOP PRINCIPAL ────────────────────────────────────────────
+    function tick(now) {
+
+      // Avança o tempo do campo de noise
       noiseTime += C.ntime;
+
       const pts     = getTouchPoints();
-      const elapsed = phaseStart!=null ? now-phaseStart : 0;
+      const elapsed = phaseStart !== null ? now - phaseStart : 0;
 
-      switch(phase){
+      // ── TRANSIÇÕES DE FASE ──
+      switch (phase) {
 
+        // Posiciona cursor fora da cena e aguarda um momento
         case 'init':
-          cursorX = pts[0].x - SR*0.7;
-          cursorY = pts[0].y - SR*0.6;
-          if(elapsed > 180){
-            mfx=cursorX; mfy=cursorY; mtx=pts[0].x; mty=pts[0].y;
-            phaseIdx=0; setPhase('move',now);
+          cursorX = pts[0].x - SR * 0.7;
+          cursorY = pts[0].y - SR * 0.6;
+          if (elapsed > 180) {
+            mfx = cursorX; mfy = cursorY;
+            mtx = pts[0].x; mty = pts[0].y;
+            phaseIdx = 0;
+            setPhase('move', now);
           }
           break;
 
+        // Cursor se move suavemente até o próximo ponto de toque
         case 'move': {
-          emitting=false;
-          const p=Math.min(1, elapsed/C.cmove);
-          cursorX = mfx+(mtx-mfx)*easeInOut(p);
-          cursorY = mfy+(mty-mfy)*easeInOut(p);
-          if(p>=1){
-            cursorX=mtx; cursorY=mty;
-            emitPhaseStart=now; setPhase('emit',now);
+          emitting = false;
+          const p  = Math.min(1, elapsed / C.cmove);
+          cursorX  = mfx + (mtx - mfx) * easeInOut(p);
+          cursorY  = mfy + (mty - mfy) * easeInOut(p);
+          if (p >= 1) {
+            cursorX = mtx; cursorY = mty;
+            emitPhaseStart = now;
+            setPhase('emit', now);
           }
           break;
         }
 
+        // Cursor parado: emite partículas; sai cedo para o próximo ponto
         case 'emit': {
-          emitting=true; emitX=cursorX; emitY=cursorY;
+          emitting = true;
+          emitX    = cursorX;
+          emitY    = cursorY;
+
+          // O cursor sai antes do fim da emissão (fração C.leave do tempo)
           const leaveAt = C.emit * C.leave;
-          if(elapsed >= leaveAt){
-            const next = phaseIdx+1;
-            if(next < pts.length){
-              mfx=cursorX; mfy=cursorY; mtx=pts[next].x; mty=pts[next].y;
-              phaseIdx=next;
-              if(next === pts.length - 1){
-                setPhase('move-final', now);
-              } else {
-                setPhase('move-emit', now);
-              }
-            } else if(elapsed >= C.emit){
-              emitting=false;
+          if (elapsed >= leaveAt) {
+            const next = phaseIdx + 1;
+            if (next < pts.length) {
+              mfx = cursorX; mfy = cursorY;
+              mtx = pts[next].x; mty = pts[next].y;
+              phaseIdx = next;
+              // Último ponto → fase especial que dispara o fadeout ao chegar
+              setPhase(next === pts.length - 1 ? 'move-final' : 'move-emit', now);
+            } else if (elapsed >= C.emit) {
+              emitting = false;
             }
           }
           break;
         }
 
+        // Cursor em movimento, partículas ainda emitindo do ponto anterior
         case 'move-emit': {
-          const p=Math.min(1, elapsed/C.cmove);
-          cursorX = mfx+(mtx-mfx)*easeInOut(p);
-          cursorY = mfy+(mty-mfy)*easeInOut(p);
+          const p  = Math.min(1, elapsed / C.cmove);
+          cursorX  = mfx + (mtx - mfx) * easeInOut(p);
+          cursorY  = mfy + (mty - mfy) * easeInOut(p);
+          // Continua emitindo até o tempo total de emissão se esgotar
           emitting = (now - emitPhaseStart) < C.emit;
-          if(p>=1){
-            cursorX=mtx; cursorY=mty;
-            emitPhaseStart=now; setPhase('emit',now);
+          if (p >= 1) {
+            cursorX = mtx; cursorY = mty;
+            emitPhaseStart = now;
+            setPhase('emit', now);
           }
           break;
         }
 
-        // Cursor move para o 3º ponto — ao chegar, dispara o fadeout
+        // Igual ao move-emit, mas ao chegar no 3º ponto dispara o fadeout
         case 'move-final': {
-          const p=Math.min(1, elapsed/C.cmove);
-          cursorX = mfx+(mtx-mfx)*easeInOut(p);
-          cursorY = mfy+(mty-mfy)*easeInOut(p);
+          const p  = Math.min(1, elapsed / C.cmove);
+          cursorX  = mfx + (mtx - mfx) * easeInOut(p);
+          cursorY  = mfy + (mty - mfy) * easeInOut(p);
           emitting = (now - emitPhaseStart) < C.emit;
-          if(p>=1){
-            cursorX=mtx; cursorY=mty;
-            emitPhaseStart=now;
-            startFadeOut(); // ← cursor chegou ao 3º ponto: fadeout começa
-            setPhase('emit',now);
+          if (p >= 1) {
+            cursorX = mtx; cursorY = mty;
+            emitPhaseStart = now;
+            startFadeOut();          // ← dispara a sequência de saída
+            setPhase('emit', now);   // continua emitindo 1s no 3º ponto
           }
           break;
         }
       }
 
-      if(emitting){
-        for(let i=0;i<C.count;i++) particles.push(new Particle(emitX,emitY));
+      // ── PARTÍCULAS ──
+      // Spawn
+      if (emitting) {
+        for (let i = 0; i < C.count; i++) {
+          particles.push(new Particle(emitX, emitY));
+        }
       }
-      particles.forEach(p=>p.update());
-      particles=particles.filter(p=>!p.isDead());
+      // Update e limpeza das partículas mortas
+      particles.forEach(p => p.update());
+      particles = particles.filter(p => !p.isDead());
 
-      if(!fadingOut || document.getElementById('intro-overlay').style.display !== 'none'){
-        ctx.clearRect(0,0,W,H);
-        ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
-        ctx.beginPath();
-        ctx.arc(CX,CY,SR,0,Math.PI*2);
-        ctx.fillStyle=YELLOW; ctx.fill();
-        particles.forEach(p=>p.draw());
-        drawCursor(cursorX,cursorY);
+      // ── RENDER ──
+      // Para de renderizar quando a overlay já foi removida do DOM
+      const overlay = document.getElementById('intro-overlay');
+      if (!overlay || overlay.style.display === 'none') {
+        requestAnimationFrame(tick);
+        return;
       }
+
+      ctx.clearRect(0, 0, W, H);
+
+      // Fundo sólido
+      ctx.fillStyle = BG;
+      ctx.fillRect(0, 0, W, H);
+
+      // Esfera amarela sólida
+      ctx.beginPath();
+      ctx.arc(CX, CY, SR, 0, Math.PI * 2);
+      ctx.fillStyle = YELLOW;
+      ctx.fill();
+
+      // Partículas (trails escuros sobre o amarelo)
+      particles.forEach(p => p.draw());
+
+      // Cursor por cima de tudo
+      drawCursor(cursorX, cursorY);
 
       requestAnimationFrame(tick);
     }
 
-    requestAnimationFrame(function(now){ phaseStart=now; requestAnimationFrame(tick); });
+    // Inicia o loop na próxima frame (agora phaseStart = agora)
+    requestAnimationFrame(function (now) {
+      phaseStart = now;
+      requestAnimationFrame(tick);
+    });
 
   })();
   </script>
