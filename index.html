@@ -52,11 +52,13 @@
     window.addEventListener('resize', resize);
 
     // ── HARDCODED VALUES ─────────────────────────────────────────
+    // Calibrados no preview onde SR ≈ 150px.
+    // Propriedades espaciais (speed, spread, wmin, wmax) escalam com SR real.
     const C = {
       count:  1,
       speed:  0.6,
       turb:   0.37,
-      nscale: 0.011,
+      nscale: 0.011,  // não escala — é relativo ao espaço world
       ntime:  0.005,
       curve:  0.084,
       life:   94,
@@ -69,6 +71,8 @@
       emit:   1100,
       leave:  0.15,
     };
+    const BASE_SR = 150;
+    function sc(v){ return v * (SR / BASE_SR); }
 
     // ── PERLIN NOISE ─────────────────────────────────────────────
     function fade(t){ return t*t*t*(t*(t*6-15)+10); }
@@ -97,23 +101,27 @@
     // ── PARTICLE ─────────────────────────────────────────────────
     class Particle {
       constructor(ox, oy){
-        this.x = ox + (Math.random()-0.5)*C.spread;
-        this.y = oy + (Math.random()-0.5)*C.spread;
+        this.x = ox + (Math.random()-0.5)*sc(C.spread);
+        this.y = oy + (Math.random()-0.5)*sc(C.spread);
         const angle = Math.random() * Math.PI * 2;
-        this.vx = Math.cos(angle) * C.speed;
-        this.vy = Math.sin(angle) * C.speed;
+        const spd = sc(C.speed);
+        this.vx = Math.cos(angle) * spd;
+        this.vy = Math.sin(angle) * spd;
         this.baseCurve = (Math.random()-0.5) * 2 * C.curve;
         this.trail = [{x:this.x, y:this.y}];
         this.life    = 0;
         this.maxLife = Math.round(C.life * (0.7 + Math.random()*0.6));
-        this.w       = C.wmin + Math.random()*(C.wmax - C.wmin);
+        this.w       = sc(C.wmin) + Math.random()*(sc(C.wmax) - sc(C.wmin));
       }
 
       update(){
         this.life++;
-        const n = noise2(this.x*C.nscale + noiseTime, this.y*C.nscale + noiseTime*0.7) * Math.PI * 2;
-        this.vx = mix(this.vx, Math.cos(n)*C.speed, C.turb*0.15);
-        this.vy = mix(this.vy, Math.sin(n)*C.speed, C.turb*0.15);
+        // noise steering — nscale ajustado pelo SR para manter frequência visual igual
+        const nsc = C.nscale * (BASE_SR / SR);
+        const n = noise2(this.x*nsc + noiseTime, this.y*nsc + noiseTime*0.7) * Math.PI * 2;
+        const spd = sc(C.speed);
+        this.vx = mix(this.vx, Math.cos(n)*spd, C.turb*0.15);
+        this.vy = mix(this.vy, Math.sin(n)*spd, C.turb*0.15);
         const cs=Math.cos(this.baseCurve), sn=Math.sin(this.baseCurve);
         const nvx=this.vx*cs - this.vy*sn;
         const nvy=this.vx*sn + this.vy*cs;
@@ -166,11 +174,16 @@
     let exitFadeStart=null;
     let emitPhaseStart=null;
 
+    // Duração total da intro (calculada):
+    // 180 init + 3*(450 move + 1100 emit) + 500 exit + 800 fade ≈ 6330ms
+    // sketch.js usa esse valor + 500ms de margem = 6800ms
+    const INTRO_TOTAL_MS = 6800;
+
     function setPhase(n,now){ phase=n; phaseStart=now; }
 
     function tick(now){
       noiseTime += C.ntime;
-      const pts    = getTouchPoints();
+      const pts     = getTouchPoints();
       const elapsed = phaseStart!=null ? now-phaseStart : 0;
 
       switch(phase){
@@ -215,8 +228,7 @@
           const p=Math.min(1, elapsed/C.cmove);
           cursorX = mfx+(mtx-mfx)*easeInOut(p);
           cursorY = mfy+(mty-mfy)*easeInOut(p);
-          const totalEmit = now - emitPhaseStart;
-          emitting = totalEmit < C.emit;
+          emitting = (now - emitPhaseStart) < C.emit;
           if(p>=1){
             cursorX=mtx; cursorY=mty;
             emitPhaseStart=now; setPhase('emit',now);
@@ -226,7 +238,7 @@
 
         case 'exit':
           emitting=false;
-          if(elapsed > Math.max(C.life*1.5, 500)) setPhase('fade',now);
+          if(elapsed > 500) setPhase('fade',now);
           break;
 
         case 'fade': {
