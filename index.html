@@ -6,12 +6,394 @@
   <title>Fidenza Embed</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: rgb(245,240,228); }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: rgb(15,14,23); }
     canvas { display: block; pointer-events: none; }
+
+    /* ── INTRO OVERLAY ─────────────────────────────────────────── */
+    #intro-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgb(15,14,23);
+      pointer-events: none;
+      /* fades out at the end */
+      transition: opacity 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #intro-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* sketch canvas starts invisible, fades in */
+    #sketch-host {
+      position: fixed;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 1.1s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    #sketch-host.visible {
+      opacity: 1;
+    }
+
+    /* intro SVG canvas */
+    #intro-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
   </style>
 </head>
 <body>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.1/p5.min.js"></script>
-  <script src="sketch.js"></script>
+
+  <!-- Intro layer -->
+  <div id="intro-overlay">
+    <svg id="intro-svg" viewBox="0 0 800 800" preserveAspectRatio="xMidYMid meet"></svg>
+  </div>
+
+  <!-- Sketch layer (hidden until intro finishes) -->
+  <div id="sketch-host">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.1/p5.min.js"></script>
+    <script src="sketch.js"></script>
+  </div>
+
+  <script>
+  (function(){
+    // ── CONFIG ──────────────────────────────────────────────────
+    const YELLOW = '#e8fe41';
+    const BLACK  = '#0f0e17';
+    const BG     = '#0f0e17';
+
+    // Sphere radius in SVG viewBox units (matches sketch SPHERE_R_PCT ~0.38 of 800)
+    const CX = 400, CY = 400, SR = 300;
+
+    // Three interaction points on the sphere surface (screen-space in viewBox coords)
+    // Positioned like upper-left, upper-right, lower-center
+    const TOUCH_POINTS = [
+      { x: CX - SR * 0.42, y: CY - SR * 0.30 },
+      { x: CX + SR * 0.28, y: CY - SR * 0.10 },
+      { x: CX - SR * 0.10, y: CY + SR * 0.38 },
+    ];
+
+    // ── STATE ───────────────────────────────────────────────────
+    let svg, cursorG, cursorBody, cursorArrow;
+    let cursorPos = { x: -200, y: -200 };
+    let ripples = []; // active ripple groups
+    let introStartTime;
+
+    // ── TIMELINE (ms) ───────────────────────────────────────────
+    // Each phase: cursor moves to a point, pauses, emits ripple, moves on
+    //   TOTAL intro duration before fade: ~7000ms
+    const CURSOR_SPEED_MS = 1200; // travel time between points
+    const PAUSE_MS        = 700;  // pause at point before ripple
+    const RIPPLE_MS       = 900;  // ripple emit duration
+    const EXIT_PAUSE_MS   = 500;  // small pause before sphere fades
+
+    // Build timeline events
+    //   0ms: start at off-screen, fade sphere in
+    //   then visit each touch point
+    const SEQ = [];
+    let t = 200;
+    // start cursor from just outside sphere, upper-left-ish
+    const START = { x: CX - SR * 0.85, y: CY - SR * 0.65 };
+
+    SEQ.push({ t, type: 'moveTo', from: START, to: TOUCH_POINTS[0], dur: CURSOR_SPEED_MS });
+    t += CURSOR_SPEED_MS + PAUSE_MS;
+    SEQ.push({ t, type: 'ripple', pos: TOUCH_POINTS[0] });
+    t += RIPPLE_MS + 200;
+
+    SEQ.push({ t, type: 'moveTo', from: TOUCH_POINTS[0], to: TOUCH_POINTS[1], dur: CURSOR_SPEED_MS });
+    t += CURSOR_SPEED_MS + PAUSE_MS;
+    SEQ.push({ t, type: 'ripple', pos: TOUCH_POINTS[1] });
+    t += RIPPLE_MS + 200;
+
+    SEQ.push({ t, type: 'moveTo', from: TOUCH_POINTS[1], to: TOUCH_POINTS[2], dur: CURSOR_SPEED_MS });
+    t += CURSOR_SPEED_MS + PAUSE_MS;
+    SEQ.push({ t, type: 'ripple', pos: TOUCH_POINTS[2] });
+    t += RIPPLE_MS + EXIT_PAUSE_MS;
+
+    const INTRO_END = t; // sphere fade starts here
+    const TOTAL_MS  = INTRO_END + 900; // +900ms for fade
+
+    // ── HELPERS ─────────────────────────────────────────────────
+    function ns(tag){ return document.createElementNS('http://www.w3.org/2000/svg', tag); }
+    function easeInOut(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+    function lerp(a,b,t){ return a + (b-a)*t; }
+
+    // ── BUILD SVG SCENE ─────────────────────────────────────────
+    function buildScene(){
+      svg = document.getElementById('intro-svg');
+      svg.setAttribute('viewBox', `0 0 800 800`);
+
+      // Background rect
+      const bg = ns('rect');
+      bg.setAttribute('width','800'); bg.setAttribute('height','800');
+      bg.setAttribute('fill', BG);
+      svg.appendChild(bg);
+
+      // Sphere — flat circle with stroke only (wireframe feel)
+      const sphere = ns('circle');
+      sphere.id = 'intro-sphere';
+      sphere.setAttribute('cx', CX);
+      sphere.setAttribute('cy', CY);
+      sphere.setAttribute('r', SR);
+      sphere.setAttribute('fill', 'none');
+      sphere.setAttribute('stroke', YELLOW);
+      sphere.setAttribute('stroke-width', '2.2');
+      sphere.setAttribute('opacity', '1');
+      svg.appendChild(sphere);
+
+      // Latitude lines (horizontal arcs as ellipses)
+      const lats = [-0.55, -0.28, 0, 0.28, 0.55];
+      lats.forEach(v => {
+        const ry = Math.abs(v) < 0.01 ? SR : SR * Math.sqrt(1 - v*v);
+        const cyOff = CY + v * SR;
+        const el = ns('ellipse');
+        el.setAttribute('cx', CX);
+        el.setAttribute('cy', cyOff);
+        el.setAttribute('rx', ry);
+        el.setAttribute('ry', ry * 0.22); // flattened — perspective
+        el.setAttribute('fill', 'none');
+        el.setAttribute('stroke', YELLOW);
+        el.setAttribute('stroke-width', '1');
+        el.setAttribute('opacity', '0.30');
+        svg.appendChild(el);
+      });
+
+      // Longitude lines (vertical ellipses at angles)
+      const longs = [0, 40, 80, 120, 160];
+      longs.forEach(deg => {
+        const rad = deg * Math.PI / 180;
+        const el = ns('ellipse');
+        el.setAttribute('cx', CX);
+        el.setAttribute('cy', CY);
+        el.setAttribute('rx', SR * Math.abs(Math.cos(rad)) + 1);
+        el.setAttribute('ry', SR);
+        el.setAttribute('fill', 'none');
+        el.setAttribute('stroke', YELLOW);
+        el.setAttribute('stroke-width', '1');
+        el.setAttribute('opacity', '0.25');
+        el.setAttribute('transform', `rotate(${deg}, ${CX}, ${CY})`);
+        svg.appendChild(el);
+      });
+
+      // Sphere clip — make lines only appear inside sphere
+      const defs = ns('defs');
+      const clipPath = ns('clipPath');
+      clipPath.id = 'sphere-clip';
+      const clipCircle = ns('circle');
+      clipCircle.setAttribute('cx', CX);
+      clipCircle.setAttribute('cy', CY);
+      clipCircle.setAttribute('r', SR - 1);
+      clipPath.appendChild(clipCircle);
+      defs.appendChild(clipPath);
+      svg.insertBefore(defs, svg.firstChild);
+
+      // Apply clip to latitude/longitude lines (all except bg and outer circle)
+      // Re-wrap grid lines in a group with clip
+      const gridG = ns('g');
+      gridG.setAttribute('clip-path', 'url(#sphere-clip)');
+      // Move all children except bg and sphere outline into gridG
+      const children = Array.from(svg.children);
+      children.forEach(c => {
+        if(c !== bg && c !== sphere && c.tagName !== 'defs'){
+          svg.removeChild(c);
+          gridG.appendChild(c);
+        }
+      });
+      svg.appendChild(gridG);
+      svg.appendChild(sphere); // Re-add sphere outline on top of grid
+
+      // Ripple container (above sphere)
+      const rippleG = ns('g');
+      rippleG.id = 'ripple-layer';
+      svg.appendChild(rippleG);
+
+      // Cursor group (top)
+      cursorG = ns('g');
+      cursorG.id = 'intro-cursor';
+      cursorG.setAttribute('transform', `translate(${START.x}, ${START.y})`);
+      svg.appendChild(cursorG);
+
+      // Cursor shape — classic arrow pointer in black
+      // Arrow path: tip at 0,0 pointing up-left
+      const arrow = ns('path');
+      arrow.setAttribute('d', `
+        M 0 0
+        L 0 22
+        L 5.5 17
+        L 9 25
+        L 12 24
+        L 8.5 16
+        L 15 16
+        Z
+      `);
+      arrow.setAttribute('fill', BLACK);
+      arrow.setAttribute('stroke', YELLOW);
+      arrow.setAttribute('stroke-width', '1.5');
+      arrow.setAttribute('stroke-linejoin', 'round');
+      cursorG.appendChild(arrow);
+
+      // Cursor dot (tip indicator)
+      const dot = ns('circle');
+      dot.setAttribute('cx', '0'); dot.setAttribute('cy', '0'); dot.setAttribute('r', '2.5');
+      dot.setAttribute('fill', YELLOW);
+      cursorG.appendChild(dot);
+    }
+
+    // ── RIPPLE EMIT ─────────────────────────────────────────────
+    function emitRipple(pos, startTime){
+      const layer = document.getElementById('ripple-layer');
+      const g = ns('g');
+      layer.appendChild(g);
+
+      // 3 wavy lines radiating from point
+      const numLines = 3;
+      const angles = [
+        -0.4, // upper-left  direction
+         0.9, // right
+        -1.8, // upper-right
+      ];
+
+      const lineEls = [];
+      angles.forEach((baseAngle, i) => {
+        const path = ns('path');
+        path.setAttribute('fill', 'none');
+        path.setAttribute('stroke', BLACK);
+        path.setAttribute('stroke-width', '2.2');
+        path.setAttribute('stroke-linecap', 'round');
+        path.setAttribute('opacity', '0');
+        g.appendChild(path);
+        lineEls.push({ path, baseAngle });
+      });
+
+      ripples.push({ g, lineEls, pos, startTime, dur: RIPPLE_MS + 400 });
+    }
+
+    function updateRipple(rp, now){
+      const elapsed = now - rp.startTime;
+      const p = Math.min(1, elapsed / rp.dur);
+
+      rp.lineEls.forEach(({ path, baseAngle }, i) => {
+        const delay = i * 0.12;
+        const lp = Math.max(0, Math.min(1, (p - delay) / (1 - delay)));
+        if(lp <= 0){ path.setAttribute('opacity','0'); return; }
+
+        const fade = lp < 0.6 ? lp / 0.6 : 1 - (lp - 0.6) / 0.4;
+        path.setAttribute('opacity', (fade * 0.92).toFixed(3));
+
+        // Build sinusoidal wavy path
+        const len = 55 * lp;
+        const segments = 14;
+        let d = '';
+        for(let s = 0; s <= segments; s++){
+          const frac = s / segments;
+          const dist = len * frac;
+          // wave perpendicular to direction
+          const waveAmp = 5 * Math.sin(frac * Math.PI * 2.5) * (1 - frac * 0.5);
+          const perpAngle = baseAngle + Math.PI / 2;
+          const px = rp.pos.x + Math.cos(baseAngle) * dist + Math.cos(perpAngle) * waveAmp;
+          const py = rp.pos.y + Math.sin(baseAngle) * dist + Math.sin(perpAngle) * waveAmp;
+          d += (s === 0 ? 'M' : 'L') + ` ${px.toFixed(2)} ${py.toFixed(2)} `;
+        }
+        path.setAttribute('d', d);
+      });
+
+      return p >= 1;
+    }
+
+    // ── CURSOR MOVE STATE ───────────────────────────────────────
+    let moveFrom = { ...START };
+    let moveTo   = { ...START };
+    let moveStartT = 0;
+    let moveDur    = 0;
+    let moving     = false;
+
+    function startMove(from, to, dur, t){
+      moveFrom   = from;
+      moveTo     = to;
+      moveStartT = t;
+      moveDur    = dur;
+      moving     = true;
+    }
+
+    function updateCursor(now){
+      if(!moving) return;
+      const p = Math.min(1, (now - moveStartT) / moveDur);
+      const e = easeInOut(p);
+      cursorPos.x = lerp(moveFrom.x, moveTo.x, e);
+      cursorPos.y = lerp(moveFrom.y, moveTo.y, e);
+      cursorG.setAttribute('transform', `translate(${cursorPos.x.toFixed(2)}, ${cursorPos.y.toFixed(2)})`);
+      if(p >= 1) moving = false;
+    }
+
+    // ── MAIN LOOP ───────────────────────────────────────────────
+    let firedEvents = new Set();
+
+    function tick(now){
+      const elapsed = now - introStartTime;
+
+      // Fire timeline events
+      SEQ.forEach((ev, idx) => {
+        if(firedEvents.has(idx)) return;
+        if(elapsed >= ev.t){
+          firedEvents.add(idx);
+          if(ev.type === 'moveTo'){
+            startMove(ev.from, ev.to, ev.dur, now);
+          } else if(ev.type === 'ripple'){
+            emitRipple(ev.pos, now);
+          }
+        }
+      });
+
+      // Update cursor
+      updateCursor(now);
+
+      // Update ripples
+      ripples = ripples.filter(rp => !updateRipple(rp, now));
+
+      // Sphere fade + intro exit
+      if(elapsed >= INTRO_END){
+        const fp = Math.min(1, (elapsed - INTRO_END) / 900);
+        // fade sphere and cursor out
+        const sphereEl = document.getElementById('intro-sphere');
+        if(sphereEl){
+          document.getElementById('intro-overlay').style.opacity = (1 - fp).toFixed(3);
+        }
+        // fade sketch host in (starts a bit earlier)
+        const host = document.getElementById('sketch-host');
+        const hp = Math.min(1, (elapsed - INTRO_END + 200) / 1100);
+        if(hp > 0) host.classList.add('visible');
+      }
+
+      if(elapsed >= TOTAL_MS){
+        // Remove overlay entirely
+        const overlay = document.getElementById('intro-overlay');
+        if(overlay) overlay.style.display = 'none';
+        return; // stop loop
+      }
+
+      requestAnimationFrame(tick);
+    }
+
+    // ── INIT ────────────────────────────────────────────────────
+    function init(){
+      buildScene();
+      introStartTime = performance.now();
+      requestAnimationFrame(tick);
+    }
+
+    // Wait for DOM
+    if(document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  })();
+  </script>
 </body>
 </html>
