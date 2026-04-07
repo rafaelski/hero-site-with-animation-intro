@@ -100,17 +100,17 @@
 
     const C = {
       count:  1,      // partículas emitidas por frame
-      speed:  0.6,    // velocidade inicial (em px no BASE_SR)
+      speed:  1.0,    // velocidade inicial (em px no BASE_SR)
       turb:   0.37,   // quanto o noise desvia a direção (0 = linha reta, 1 = caótico)
       nscale: 0.011,  // escala espacial do campo de noise (frequência das ondas)
       ntime:  0.005,  // velocidade de evolução do campo no tempo
       curve:  0.084,  // curvatura base de cada partícula (rotação constante da velocidade)
-      life:   94,     // vida máxima em frames (±60% de variação aleatória)
+      life:   100,     // vida máxima em frames (±60% de variação aleatória)
       wmin:   1.6,    // espessura mínima do traço (em px no BASE_SR)
       wmax:   8.0,    // espessura máxima do traço (em px no BASE_SR)
       trail:  4,      // comprimento da cauda (quantos pontos o trail guarda)
       alpha:  1.00,   // opacidade máxima das partículas
-      spread: 24,     // raio de dispersão do ponto de spawn (em px no BASE_SR)
+      spread: 28,     // raio de dispersão do ponto de spawn (em px no BASE_SR)
       cmove:  450,    // duração do movimento do cursor entre pontos (ms)
       emit:   1100,   // tempo total de emissão em cada ponto (ms)
       leave:  0.15,   // fração do tempo de emissão após a qual o cursor já sai (0–1)
