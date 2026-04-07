@@ -306,7 +306,7 @@ function setup(){
     CANVAS_W=window.innerWidth; CANVAS_H=window.innerHeight;
     SPHERE_R=calcSphereR(); resizeCanvas(CANVAS_W,CANVAS_H);
     _chooseAndApplyPresets();
-  },8800); // delay maior: aguarda intro terminar (~8500ms) antes de animar as partículas
+  },6800); // aguarda intro terminar (~6330ms) + margem antes de animar as partículas
   emitTheme();
   new ResizeObserver(function(es){
     for(let e of es){
