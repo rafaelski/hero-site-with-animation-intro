@@ -53,12 +53,12 @@
 
     // ── HARDCODED VALUES ─────────────────────────────────────────
     // Calibrados no preview onde SR ≈ 150px.
-    // Propriedades espaciais (speed, spread, wmin, wmax) escalam com SR real.
+    // Propriedades espaciais escalam proporcionalmente ao SR real via sc().
     const C = {
       count:  1,
       speed:  0.6,
       turb:   0.37,
-      nscale: 0.011,  // não escala — é relativo ao espaço world
+      nscale: 0.011,
       ntime:  0.005,
       curve:  0.084,
       life:   94,
@@ -116,7 +116,6 @@
 
       update(){
         this.life++;
-        // noise steering — nscale ajustado pelo SR para manter frequência visual igual
         const nsc = C.nscale * (BASE_SR / SR);
         const n = noise2(this.x*nsc + noiseTime, this.y*nsc + noiseTime*0.7) * Math.PI * 2;
         const spd = sc(C.speed);
@@ -171,13 +170,20 @@
     let mfx,mfy,mtx,mty;
     let emitting=false, emitX=0, emitY=0;
     let particles=[];
-    let exitFadeStart=null;
     let emitPhaseStart=null;
 
-    // Duração total da intro (calculada):
-    // 180 init + 3*(450 move + 1100 emit) + 500 exit + 800 fade ≈ 6330ms
-    // sketch.js usa esse valor + 500ms de margem = 6800ms
-    const INTRO_TOTAL_MS = 6800;
+    // Fade state — driven by _sketchReady flag, not by fixed timing
+    let introFading = false;
+    let introFadeStart = null;
+    let introDone = false;
+
+    // Poll for sketch ready signal
+    const readyPoller = setInterval(function(){
+      if(window._sketchReady && !introFading){
+        introFading = true;
+        clearInterval(readyPoller);
+      }
+    }, 100);
 
     function setPhase(n,now){ phase=n; phaseStart=now; }
 
@@ -186,71 +192,75 @@
       const pts     = getTouchPoints();
       const elapsed = phaseStart!=null ? now-phaseStart : 0;
 
-      switch(phase){
+      if(!introDone){
+        switch(phase){
 
-        case 'init':
-          cursorX = pts[0].x - SR*0.7;
-          cursorY = pts[0].y - SR*0.6;
-          if(elapsed > 180){
-            mfx=cursorX; mfy=cursorY; mtx=pts[0].x; mty=pts[0].y;
-            phaseIdx=0; setPhase('move',now);
-          }
-          break;
-
-        case 'move': {
-          emitting=false;
-          const p=Math.min(1, elapsed/C.cmove);
-          cursorX = mfx+(mtx-mfx)*easeInOut(p);
-          cursorY = mfy+(mty-mfy)*easeInOut(p);
-          if(p>=1){
-            cursorX=mtx; cursorY=mty;
-            emitPhaseStart=now; setPhase('emit',now);
-          }
-          break;
-        }
-
-        case 'emit': {
-          emitting=true; emitX=cursorX; emitY=cursorY;
-          const leaveAt = C.emit * C.leave;
-          if(elapsed >= leaveAt){
-            const next = phaseIdx+1;
-            if(next < pts.length){
-              mfx=cursorX; mfy=cursorY; mtx=pts[next].x; mty=pts[next].y;
-              phaseIdx=next; setPhase('move-emit',now);
-            } else if(elapsed >= C.emit){
-              emitting=false; setPhase('exit',now);
+          case 'init':
+            cursorX = pts[0].x - SR*0.7;
+            cursorY = pts[0].y - SR*0.6;
+            if(elapsed > 180){
+              mfx=cursorX; mfy=cursorY; mtx=pts[0].x; mty=pts[0].y;
+              phaseIdx=0; setPhase('move',now);
             }
+            break;
+
+          case 'move': {
+            emitting=false;
+            const p=Math.min(1, elapsed/C.cmove);
+            cursorX = mfx+(mtx-mfx)*easeInOut(p);
+            cursorY = mfy+(mty-mfy)*easeInOut(p);
+            if(p>=1){
+              cursorX=mtx; cursorY=mty;
+              emitPhaseStart=now; setPhase('emit',now);
+            }
+            break;
           }
-          break;
+
+          case 'emit': {
+            emitting=true; emitX=cursorX; emitY=cursorY;
+            const leaveAt = C.emit * C.leave;
+            if(elapsed >= leaveAt){
+              const next = phaseIdx+1;
+              if(next < pts.length){
+                mfx=cursorX; mfy=cursorY; mtx=pts[next].x; mty=pts[next].y;
+                phaseIdx=next; setPhase('move-emit',now);
+              } else if(elapsed >= C.emit){
+                emitting=false; setPhase('wait-ready',now);
+              }
+            }
+            break;
+          }
+
+          case 'move-emit': {
+            const p=Math.min(1, elapsed/C.cmove);
+            cursorX = mfx+(mtx-mfx)*easeInOut(p);
+            cursorY = mfy+(mty-mfy)*easeInOut(p);
+            emitting = (now - emitPhaseStart) < C.emit;
+            if(p>=1){
+              cursorX=mtx; cursorY=mty;
+              emitPhaseStart=now; setPhase('emit',now);
+            }
+            break;
+          }
+
+          // Aguarda o sketch sinalizar que está pronto antes de fazer fade
+          case 'wait-ready':
+            emitting=false;
+            if(introFading && !introFadeStart){
+              introFadeStart = now;
+            }
+            break;
         }
+      }
 
-        case 'move-emit': {
-          const p=Math.min(1, elapsed/C.cmove);
-          cursorX = mfx+(mtx-mfx)*easeInOut(p);
-          cursorY = mfy+(mty-mfy)*easeInOut(p);
-          emitting = (now - emitPhaseStart) < C.emit;
-          if(p>=1){
-            cursorX=mtx; cursorY=mty;
-            emitPhaseStart=now; setPhase('emit',now);
-          }
-          break;
-        }
-
-        case 'exit':
-          emitting=false;
-          if(elapsed > 500) setPhase('fade',now);
-          break;
-
-        case 'fade': {
-          if(!exitFadeStart) exitFadeStart=now;
-          const fp=Math.min(1,(now-exitFadeStart)/800);
-          document.getElementById('intro-overlay').style.opacity=(1-fp).toFixed(3);
-          if(fp>0.1) document.getElementById('sketch-host').classList.add('visible');
-          if(fp>=1){
-            document.getElementById('intro-overlay').style.display='none';
-            return;
-          }
-          break;
+      // Fade out intro overlay — só quando sketch está pronto
+      if(introFading && introFadeStart){
+        const fp = Math.min(1, (now - introFadeStart) / 900);
+        document.getElementById('intro-overlay').style.opacity = (1-fp).toFixed(3);
+        if(fp > 0.05) document.getElementById('sketch-host').classList.add('visible');
+        if(fp >= 1){
+          document.getElementById('intro-overlay').style.display = 'none';
+          introDone = true;
         }
       }
 
@@ -260,13 +270,16 @@
       particles.forEach(p=>p.update());
       particles=particles.filter(p=>!p.isDead());
 
-      ctx.clearRect(0,0,W,H);
-      ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
-      ctx.beginPath();
-      ctx.arc(CX,CY,SR,0,Math.PI*2);
-      ctx.fillStyle=YELLOW; ctx.fill();
-      particles.forEach(p=>p.draw());
-      drawCursor(cursorX,cursorY);
+      // Render intro overlay enquanto não terminou
+      if(!introDone || introFading){
+        ctx.clearRect(0,0,W,H);
+        ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
+        ctx.beginPath();
+        ctx.arc(CX,CY,SR,0,Math.PI*2);
+        ctx.fillStyle=YELLOW; ctx.fill();
+        particles.forEach(p=>p.draw());
+        drawCursor(cursorX,cursorY);
+      }
 
       requestAnimationFrame(tick);
     }
