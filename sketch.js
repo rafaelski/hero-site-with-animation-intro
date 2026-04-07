@@ -306,8 +306,16 @@ function setup(){
     CANVAS_W=window.innerWidth; CANVAS_H=window.innerHeight;
     SPHERE_R=calcSphereR(); resizeCanvas(CANVAS_W,CANVAS_H);
     _chooseAndApplyPresets();
-    window._sketchReady = true;
-  },6500);
+  },200);
+  // Aguarda sinal da intro antes de animar o slider
+  window._introSignalReceived = false;
+  var _sliderHintInterval = setInterval(function(){
+    if(window._introSignal){
+      window._introSignalReceived = true;
+      clearInterval(_sliderHintInterval);
+      if(window._startSliderHint) window._startSliderHint();
+    }
+  }, 50);
   emitTheme();
   new ResizeObserver(function(es){
     for(let e of es){
@@ -815,7 +823,12 @@ function buildUserSlider(){
   },500);
 
   setVal(0,false);
-  playHint();
+  // Só anima o slider após receber sinal da intro (window._introSignal)
+  if(window._introSignalReceived){
+    playHint();
+  } else {
+    window._startSliderHint = function(){ playHint(); };
+  }
 
   function buildAbstractIcon(type){
     switch(type){
